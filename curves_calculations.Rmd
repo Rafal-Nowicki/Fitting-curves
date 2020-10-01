@@ -1,5 +1,5 @@
 ---
-title: "Estymacja krzywych YouTube"
+title: "YouTube Curves Estimation"
 author: "Rafal Nowicki"
 date: "01 10 2020"
 output:
@@ -27,27 +27,81 @@ library(reticulate)
 knitr::knit_engines$set(python = reticulate::eng_python)  
 ```
 
-# Zadanie
+# Goal
 
-Zadanie polega na wpasowaniu krzywej dystrybuanty rozkladu log-normalnego do danych youtubowych:
+In general, our goal is to fit log-normal cumulative distribution function (CDF) into several data clouds.
 
-$$\textbf{REACH_1} = \beta_1 \times lognormCDF_{(\mu, \sigma)}(\textbf{GRP})$$
+Data comes from \textbf{Youtube} and represents relationship between campaign intensity (the so called `GRP`) and percent of reached audience (`REACH`). We got data on many target groups - each TG has its unique ID (`dict_id`).
 
-Dla każdej target groupy (dict\_id) dysponujemy danymi nt. GRPs oraz odpowiadającym im zasiegom REACH. Dla każdego dict\_id istnieje do 10 krzywych REACH (frequency od 1 do 10). Wyznaczanie parametrow krzywych odbywa sie dwuetapowo:
+There are potentially 10 types of `reach` for each TG - Reach 1+, Reach 2+, and so on, up to Reach 10+.
 
-1.  Najpierw wyznaczane sa parametry krzywej REACH 1+ za pomoca zadanego algorytmu minimalizujacego kwadraty odchylen krzywej od data pointow. Dla frequency 1+ szukamy trzech parametrow $\beta, \mu, \sigma$:
+Interpretations of given `reach` values are as follows:
 
-2.  Wyznaczamy dwa parametry krzywych wyzszych czestotliwosci (od 2+ w gore) - parametr skali $\beta$ jest dla wszsytkich krzywych jednakowy (wyznaczony dla REACH 1+) - przyjmujemy wiec $\beta = \hat{\beta_1}$.
+-   Reach 1+ of 0.4 means that 40% of TG was exposed to the campaign at least 1 time.
+-   Reach 3+ of 0.2 means that 20% of TG was exposed to the campaign at least 3 times.
 
-W ten sposob zagwarantowane jest ze krzywe wyzszych czestotliwosci nie beda przecinac krzywych nizszych czestotliwosci.
+------------------------------------------------------------------------
 
-# Funkcje napisane w R
+**One important note**
 
-W tej sekcji porownane zostana dwie funkcje optymalizacyjne napisane w R pod katem bledow oraz czasu wykonywania.
+Reach of higher frequency is always less than reach of lower frequency (for the same GRP).
 
-## Biblioteki
+------------------------------------------------------------------------
 
-Ladujemy potrzebne biblioteki - w zasadzie potrzebujemy tylko `RODBC` oraz `tidyverse`.
+Theoretically, we assume investigated relationship looks something like that:
+
+$$y_i = \beta_1 \times lognormCDF_{\mu_i, \sigma_i}(x),$$
+
+where $y_i$ is the reach for i-th frequency and $x$ corresponds to gross rating point (GRP).
+
+Look at the subscripts in the formula above! Scale parameter $\beta$ is estimated only once (for `REACH 1+`) and then apply for estimation of subsequent `reaches` within given TG.
+
+Basically we do the estimation process in the following way:
+
+For each `dict_id`:
+
+-   Firstly we seek for 3 parameters. We use optimization algorithm to find optimal combination of parameters for which **sum of squared errors** is minimal. Estimated parameters are as follows:
+
+| Parameter | Explanation     |
+|-----------|-----------------|
+| $\beta$   | scale parameter |
+| $\mu$     | log mean        |
+| $\sigma$  | log st. dev     |
+
+-   Then, having the parameters' estimates for `reach 1+` we save $\beta_1$ coefficient - all of our curves within one `dict_id` will share common scale parameter. It is important because otherwise estimated curves might intersect one another. All in all for reaches of frequency higher than 1 we search for two parameters (with $\beta$ fixed):
+
+| Parameter | Explanation |
+|-----------|-------------|
+| $\mu$     | log mean    |
+| $\sigma$  | log st. dev |
+
+-   We optimize `SSE` once again - this time for all reaches of higher frequency, so `reach 2+` possibly up to `reach 10+`. In that way we end up with a table looking somewhat like that:
+
+| frequency | $\beta$ | $\mu$ | $\sigma$ | $\Sigma_i^n e_i$ |
+|-----------|---------|-------|----------|--------------|
+| 1         | 75      | 2.45  | 3.15     | 0.08         |
+| 2         | 75      | 3.12  | 3.22     | 0.12         |
+| 3         | 75      | 4.13  | 2.73     | 0.06         |
+| 4         | 75      | 3.65  | 3.23     | 0.22         |
+| 5         | 75      | 2.22  | 1.27     | 0.45         |
+| 6         | 75      | 5.57  | 3.62     | 0.32         |
+| 7         | 75      | 4.64  | 2.55     | 0.33         |
+
+: Desired output
+
+Then, the whole procedure is repeated for each `dict_id` in our DB.
+
+# R functions
+
+In this section we will compare two R functions designed to do all the tasks described above. First one uses several `for` and `while` loops - we will refer to it as the "old" one. Second one takes advantage of `tidyverse` package and especially `purrr` library that allows us to use different types of **map functions**.
+
+Compared will be:
+
+- times needed to do all the calculations
+- sum of squared errors (both within `dict_id` and in total)
+
+## Libraries
+Let's take off with the analysis! First we have to load necessary packages. In fact we need just two of them - `RODBC` for DB connection and `tidyverse` for data wrangling. Remaing two libraries `DT` and `kableExtra` are used just for this document to look nice.
 
 ```{r message = FALSE}
 library(RODBC)
@@ -58,7 +112,7 @@ library(kableExtra)
 
 ## Data extraction
 
-Laczymy sie z baza danych, zaciagamy wszystkie ID, po czym dla zadanej czesci zbioru ID zaciagmy dane.
+We configure Data Base Connection using `connect_SQL` funcion. After connecting we query DB to extract all `dict_id`. Having that done we can load all the data for `dict_id` of our interest - let's say we are going to do the analysis for the fist 1000 IDs from the DB.
 
 ```{r}
 source("connect_SQL.R")
@@ -67,36 +121,41 @@ myconn <- connectSQL()
 
 # Get the data - SQL Query ----------------------------------------------------
 
+# Get all IDs
 all.ids.df <- sqlQuery(myconn, 
                        paste0("SELECT DISTINCT [dict_id]
                                  FROM [youtube].[stage]"),
                        stringsAsFactors = F) %>%
   arrange(dict_id)
 
-current.ids= all.ids.df[1:1000, ]
+current.ids= all.ids.df[1:10, ]
 
-n = length(current.ids)
-
+# Get the data for given IDs
 raw.current.yt.data.df <- sqlQuery(myconn, 
                                    paste0("SELECT * FROM [youtube].[stage] WHERE [dict_id] IN ('", 
                                           paste0(current.ids, collapse = "', '"),
                                           "')"), stringsAsFactors = F)
 ```
 
-Pierwszych 50 wierszy wyglada tak:
-
+Now we can finally take a look on the data itself. First 150 rows look as follows:
 ```{r, eval = TRUE}
 raw.current.yt.data.df %>%
   head(150) %>%
   datatable(., rownames = FALSE, filter="top",
-            options = list(pageLength = 5, scrollX=T))
+            options = list(pageLength = 10, scrollX=T))
 ```
 
-## Pozyskanie danych
+## Data wrangling
 
-Dokonujemy transformacji zmiennych - wyznaczamy GRP oraz poszczegolne REACHe - `... %>% mutate(across(starts_with("reach"), ~{100 * ./audience_size})) %>% ...`:
+In order to proceed with the analysis we first have to create variables of interest - `GRP` and all the `Reaches`. 
 
-$$grp = 100 \times \frac{impression\_target}  {audience\_size}$$ $$reach\_transformed_i = \frac{reach_i}{audience\_size} \;\textbf{ dla i = 1, 2, ...}$$
+Creating `GRP` variable is quite simple - it's just division of two columns:
+
+$$grp = 100 \times \frac{impression\_target}  {audience\_size}$$
+With `reaches` it's similar but as there are several of them we will go with:
+`... %>% mutate(across(starts_with("reach"), ~{100 * ./audience_size})) %>% ...`
+
+ $$reach\_transformed_i = \frac{reach_i}{audience\_size} \;\textbf{ for i = 1, 2, ...}$$
 
 ```{r}
 # Transform the data ----------------------------------------------------------
@@ -107,9 +166,16 @@ current.yt.data.df = raw.current.yt.data.df %>%
   select(-c(audience_size, impressions, impressions_target, youtube_group_size)) 
 ```
 
-## Optimization algorithm configuration
+## Algorithm config
 
-Zadajemy warunki potrzebne optymalizatorowi - zakres b, c, d
+Now we will set up all the necessary constraints for the optimization algorithm - on $\beta$, $\mu$ and $\sigma$.
+
+
+***
+**One important note:**
+Not applying any constraints on $\beta$ might result in better fit but then we loose convenient interpretability (as the asymptotic reach (?)).
+
+***
 
 ```{r}
 # Z ML estimator
@@ -135,11 +201,11 @@ ui.with.b <- rbind(ui.with.b, matrix(c(0,0,1, 0,0,-1), ncol = 3, byrow = TRUE))
 ci.with.b <- round(c(1, -500, c_min, -c_max, d_min, -d_max))
 ```
 
-## R new function using constrOptim
+## R new function 
 
-Funkcja do liczenia krzywych nie wykorzystujaca bezposrednio petli.
+This function doesn't use any loop (directly) and is based on constrOptim function. It calculates curves just once so in the output there might (or might not?) be some poor fits - we will check it...
 
-Szuka rozwiazania optymalnego tylko 1 raz
+Feel free to hit "code" button on the RHS to see the beauty of this function.
 
 ```{r}
 # Reach 1 optimisation (3 parameters) -----------------------------------------
@@ -235,9 +301,9 @@ EstCurve <- function(reachCurves){
 
 ## R old function
 
-Stara funkcja optymalizacyjna wykorzystujaca 3 petle:
+The old function incorporates three loops and seek for the optimal solution several times (argument `maxIt`).
 
-Szuka rozwiazania optymalnego zadana max.iter liczbe razy.
+Again, hit the "code" button to see it.
 
 ```{r}
 calculateCurvesPar2 <- function(reach.curves.df, max.iter, ui, ci, ui.with.b, ci.with.b) {
@@ -441,7 +507,6 @@ data.frame(stara = elapsed, nowa = elapsed1) %>%
 ```
 
 ## Comparison
-
 
 ```{r echo=FALSE, warning = F}
 inputPanel(
