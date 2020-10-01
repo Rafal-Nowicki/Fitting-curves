@@ -13,15 +13,12 @@ output:
 runtime: shiny
 ---
 
-<script>
-   $(document).ready(function() {
-     $head = $('#header');
-     $head.prepend('<img src=\"logo.png\" style=\"float: right;width: 250px;\"/>')
-   });
-</script>
+```{r, echo=FALSE}
+htmltools::img(src = knitr::image_uri("logo.png"), 
+               alt = 'logo', 
+               style = 'position:absolute; top:1; right:0; padding:30px;width: 150px;')
+```
 
-
-  
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
@@ -33,19 +30,16 @@ knitr::knit_engines$set(python = reticulate::eng_python)
 # Zadanie
 
 Zadanie polega na wpasowaniu krzywej dystrybuanty rozkladu log-normalnego do danych youtubowych:
-  
-  $$\textbf{REACH_1} = \beta_1 \times lognormCDF_{(\mu, \sigma)}(\textbf{GRP})$$
-  
-  
-  Dla każdej target groupy (dict_id) dysponujemy danymi nt. GRPs oraz odpowiadającym im zasiegom REACH. Dla każdego dict_id istnieje do 10 krzywych REACH (frequency od 1 do 10). Wyznaczanie parametrow krzywych odbywa sie dwuetapowo:
-  
-  1. Najpierw wyznaczane sa parametry krzywej REACH 1+ za pomoca zadanego algorytmu minimalizujacego kwadraty odchylen krzywej od data pointow. Dla frequency 1+ szukamy trzech parametrow $\beta, \mu, \sigma$:
-  
-  2. Wyznaczamy dwa parametry krzywych wyzszych czestotliwosci (od 2+ w gore) - parametr skali $\beta$ jest dla wszsytkich krzywych jednakowy (wyznaczony dla REACH 1+) - przyjmujemy wiec $\beta = \hat{\beta_1}$.
 
+$$\textbf{REACH_1} = \beta_1 \times lognormCDF_{(\mu, \sigma)}(\textbf{GRP})$$
+
+Dla każdej target groupy (dict\_id) dysponujemy danymi nt. GRPs oraz odpowiadającym im zasiegom REACH. Dla każdego dict\_id istnieje do 10 krzywych REACH (frequency od 1 do 10). Wyznaczanie parametrow krzywych odbywa sie dwuetapowo:
+
+1.  Najpierw wyznaczane sa parametry krzywej REACH 1+ za pomoca zadanego algorytmu minimalizujacego kwadraty odchylen krzywej od data pointow. Dla frequency 1+ szukamy trzech parametrow $\beta, \mu, \sigma$:
+
+2.  Wyznaczamy dwa parametry krzywych wyzszych czestotliwosci (od 2+ w gore) - parametr skali $\beta$ jest dla wszsytkich krzywych jednakowy (wyznaczony dla REACH 1+) - przyjmujemy wiec $\beta = \hat{\beta_1}$.
 
 W ten sposob zagwarantowane jest ze krzywe wyzszych czestotliwosci nie beda przecinac krzywych nizszych czestotliwosci.
-
 
 # Funkcje napisane w R
 
@@ -79,7 +73,7 @@ all.ids.df <- sqlQuery(myconn,
                        stringsAsFactors = F) %>%
   arrange(dict_id)
 
-current.ids= all.ids.df[1:10, ]
+current.ids= all.ids.df[1:1000, ]
 
 n = length(current.ids)
 
@@ -90,7 +84,7 @@ raw.current.yt.data.df <- sqlQuery(myconn,
 ```
 
 Pierwszych 50 wierszy wyglada tak:
-  
+
 ```{r, eval = TRUE}
 raw.current.yt.data.df %>%
   head(150) %>%
@@ -101,9 +95,9 @@ raw.current.yt.data.df %>%
 ## Pozyskanie danych
 
 Dokonujemy transformacji zmiennych - wyznaczamy GRP oraz poszczegolne REACHe - `... %>% mutate(across(starts_with("reach"), ~{100 * ./audience_size})) %>% ...`:
-  
-  $$grp = 100 \times \frac{impression\_target}  {audience\_size}$$ $$reach\_transformed_i = \frac{reach_i}{audience\_size} \;\textbf{ dla i = 1, 2, ...}$$
-  
+
+$$grp = 100 \times \frac{impression\_target}  {audience\_size}$$ $$reach\_transformed_i = \frac{reach_i}{audience\_size} \;\textbf{ dla i = 1, 2, ...}$$
+
 ```{r}
 # Transform the data ----------------------------------------------------------
 current.yt.data.df = raw.current.yt.data.df %>%
@@ -242,8 +236,8 @@ EstCurve <- function(reachCurves){
 ## R old function
 
 Stara funkcja optymalizacyjna wykorzystujaca 3 petle:
-  
-  Szuka rozwiazania optymalnego zadana max.iter liczbe razy.
+
+Szuka rozwiazania optymalnego zadana max.iter liczbe razy.
 
 ```{r}
 calculateCurvesPar2 <- function(reach.curves.df, max.iter, ui, ci, ui.with.b, ci.with.b) {
@@ -367,7 +361,6 @@ calculateCurvesPar2 <- function(reach.curves.df, max.iter, ui, ci, ui.with.b, ci
 
 Zapuszczamy obydwie funkcje...
 
-  
 ```{r, message = FALSE, warning = FALSE}
 
 # Nowa funkcja -----------------------------------------------------------------
@@ -438,19 +431,17 @@ n_bad.old = sse.table.old %>%
 
 ```
 
-Funkcja stara:
-  
+Porownanie czasu wykonywania obliczen dla obydwu funkcji.
+
 ```{r}
-elapsed
+data.frame(stara = elapsed, nowa = elapsed1) %>%
+  kable() %>%
+  kable_styling()
+
 ```
 
-Funkcja nowa:
-  
-```{r}
-elapsed1
-```
+## Comparison
 
-## Validation
 
 ```{r echo=FALSE, warning = F}
 inputPanel(
