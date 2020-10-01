@@ -1,0 +1,6 @@
+connectSQL <- function(){
+  
+  RODBC::odbcConnect(dsn = "BI103",
+                     uid = "BI_Tablo",
+                     pwd = "#EDC4rfv")
+}

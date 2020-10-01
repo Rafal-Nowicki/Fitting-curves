@@ -1,0 +1,631 @@
+---
+title: "Curves codes"
+author: "RN"
+date: "28 09 2020"
+output:
+  html_document:
+    theme: united
+    highlight: tango
+    code_folding: hide
+    toc: true
+    toc_float: true
+runtime: shiny
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(knitr)  
+library(reticulate)  
+knitr::knit_engines$set(python = reticulate::eng_python)  
+```
+
+# Zadanie
+
+Zadanie polega na wpasowaniu krzywej dystrybuanty rozkladu log-normalnego do danych youtubowych:
+  
+  $$\textbf{REACH_1} = \beta_1 \times lognormCDF_{(\mu, \sigma)}(\textbf{GRP})$$
+  
+  
+  Dla każdej target groupy (dict_id) dysponujemy danymi nt. GRPs oraz odpowiadającym im zasiegom REACH. Dla każdego dict_id istnieje do 10 krzywych REACH (frequency od 1 do 10). Wyznaczanie parametrow krzywych odbywa sie dwuetapowo:
+  
+  1. Najpierw wyznaczane sa parametry krzywej REACH 1+ za pomoca zadanego algorytmu minimalizujacego kwadraty odchylen krzywej od data pointow. Dla frequency 1+ szukamy trzech parametrow $\beta, \mu, \sigma$:
+  
+  2. Wyznaczamy dwa parametry krzywych wyzszych czestotliwosci (od 2+ w gore) - parametr skali $\beta$ jest dla wszsytkich krzywych jednakowy (wyznaczony dla REACH 1+) - przyjmujemy wiec $\beta = \hat{\beta_1}$.
+
+
+W ten sposob zagwarantowane jest ze krzywe wyzszych czestotliwosci nie beda przecinac krzywych nizszych czestotliwosci.
+
+
+# Funkcje napisane w R
+
+W tej sekcji porownane zostana dwie funkcje optymalizacyjne napisane w R pod katem bledow oraz czasu wykonywania.
+
+### Biblioteki
+
+Ladujemy potrzebne biblioteki - w zasadzie potrzebujemy tylko `RODBC` oraz `tidyverse`.
+
+```{r message = FALSE}
+library(RODBC)
+library(tidyverse)
+library(DT)
+library(kableExtra)
+```
+
+## Data extraction
+
+Laczymy sie z baza danych, zaciagamy wszystkie ID, po czym dla zadanej czesci zbioru ID zaciagmy dane.
+
+```{r}
+source("connect_SQL.R")
+
+myconn <- connectSQL()
+
+# Get the data - SQL Query ----------------------------------------------------
+
+all.ids.df <- sqlQuery(myconn, 
+                       paste0("SELECT DISTINCT [dict_id]
+                                 FROM [youtube].[stage]"),
+                       stringsAsFactors = F) %>%
+  arrange(dict_id)
+
+current.ids= all.ids.df[1:10, ]
+
+n = length(current.ids)
+
+raw.current.yt.data.df <- sqlQuery(myconn, 
+                                   paste0("SELECT * FROM [youtube].[stage] WHERE [dict_id] IN ('", 
+                                          paste0(current.ids, collapse = "', '"),
+                                          "')"), stringsAsFactors = F)
+```
+
+Pierwszych 50 wierszy wyglada tak:
+  
+```{r, eval = F}
+raw.current.yt.data.df %>%
+  head(50) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "400px")
+```
+
+## Pozyskanie danych
+
+Dokonujemy transformacji zmiennych - wyznaczamy GRP oraz poszczegolne REACHe - `... %>% mutate(across(starts_with("reach"), ~{100 * ./audience_size})) %>% ...`:
+  
+  $$grp = 100 \times \frac{impression\_target}  {audience\_size}$$ $$reach\_transformed_i = \frac{reach_i}{audience\_size} \;\textbf{ dla i = 1, 2, ...}$$
+  
+```{r}
+# Transform the data ----------------------------------------------------------
+current.yt.data.df = raw.current.yt.data.df %>%
+  mutate(grp = 100 * (impressions_target / audience_size)) %>%
+  mutate(across(starts_with("reach"),
+                ~{100*./audience_size})) %>%
+  select(-c(audience_size, impressions, impressions_target, youtube_group_size)) 
+```
+
+## Optimization algorithm configuration
+
+Zadajemy warunki potrzebne optymalizatorowi - zakres b, c, d
+
+```{r}
+# Z ML estimator
+#c.init = mean(log(reach1$grp))
+#d.init = mean((log(reach1$grp) - c.init)^2)
+
+# Warunki ograniczajace
+c_min = -1e+2
+c_max = 1e+4
+d_min = 1e-8
+d_max = 1e+4
+
+# Dla frequency 2+
+ui <- matrix(c(1,0, -1,0, 0,1, 0,-1),
+             ncol = 2, 
+             byrow = TRUE)
+
+ci <- round(c(c_min, -c_max, d_min, -d_max), 1) 
+
+# Dla frequency 1
+ui.with.b <- cbind(ui, c(0, 0, 0, 0))
+ui.with.b <- rbind(ui.with.b, matrix(c(0,0,1, 0,0,-1), ncol = 3, byrow = TRUE))
+ci.with.b <- round(c(1, -500, c_min, -c_max, d_min, -d_max))
+```
+
+## R new function using constrOptim
+
+Funkcja do liczenia krzywych nie wykorzystujaca bezposrednio petli.
+
+Szuka rozwiazania optymalnego tylko 1 raz
+
+```{r}
+# Reach 1 optimisation (3 parameters) -----------------------------------------
+EstCurve <- function(reachCurves){
+  
+  
+  # Funkcja celu dla frequency 1 - suma kwadratow roznic FITTED i ACTUAL
+  sse <- function(params, curves.df){
+    sum((params[1] * plnorm(curves.df$grp, 
+                            params[2], 
+                            params[3]) - curves.df$reach)^2) }
+  
+  
+  sse_fixed_b <- function(params, curves.df){
+    sum((b * plnorm(curves.df$grp, 
+                    params[1], 
+                    params[2]) - curves.df$reach)^2)  }
+  
+  
+  # Initial points
+  b.init = runif(1, 1, 100)
+  
+  # Losowe
+  c.init = runif(1, 1, 100)
+  d.init = runif(1, 1, 100)
+  
+  
+  nested_df.1 = reachCurves %>%
+    select(grp, reach1) %>%
+    na_if(., 0) %>%
+    arrange(grp) %>%
+    gather("type","reach", -grp) %>%
+    drop_na() %>%
+    nest() %>%
+    mutate(optimized = map(.x = data,
+                           .f = ~constrOptim(theta = c(b.init, c.init, d.init),
+                                             f = sse,
+                                             curves.df = .x,
+                                             grad = NULL,
+                                             ui = ui.with.b,
+                                             ci = ci.with.b))) %>%
+    mutate(params = map(.x = optimized, .f = ~.x$par),
+           sse = map_dbl(.x = optimized, .f = ~.x$value),
+           maxGrp = map_dbl(.x = data, .f = ~max(.x$grp)),
+           pointsNumber = map_dbl(.x = data, .f = ~nrow(.x))) %>%
+    unnest_wider(params) %>%
+    rename(b = ...1, c = ...2, d = ...3) %>%
+    bind_cols(type = "reach1" ,.)
+  
+  params = nested_df.1$optimized[[1]][1]$par
+  
+  nested_df.1 = nested_df.1 %>%
+    select(-c(optimized))
+  
+  # Reach 2+ optimisation ---------------------------------------
+  
+  b = params[1]
+  
+  
+  nested_df = reachCurves %>%
+    select(-reach1) %>%
+    na_if(., 0) %>%
+    arrange(grp) %>%
+    gather("type","reach", -grp) %>%
+    drop_na() %>%
+    group_by(type) %>%
+    nest() %>%
+    mutate(optimized = map(.x = data,
+                           .f = ~constrOptim(theta = c(c.init, d.init),
+                                             f = sse_fixed_b,
+                                             curves.df = .x,
+                                             grad = NULL,
+                                             ui = ui,
+                                             ci = ci))) %>%
+    mutate(b = rep(b),
+           params = map(.x = optimized, .f = ~.x$par),
+           sse = map_dbl(.x = optimized, .f = ~.x$value),
+           maxGrp = map_dbl(.x = data, .f = ~max(.x$grp)),
+           pointsNumber = map_dbl(.x = data, .f = ~nrow(.x))) %>%
+    unnest_wider(params) %>%
+    rename(c = ...1, d = ...2 ) %>%
+    select(-c(optimized))
+  
+  
+  # Summary table -------------------------------------------------------------
+  
+  out.table = rbind(nested_df.1, nested_df)
+  
+  return(out.table)
+  
+}
+```
+
+## R old function
+
+Stara funkcja optymalizacyjna wykorzystujaca 3 petle:
+  
+  Szuka rozwiazania optymalnego zadana max.iter liczbe razy.
+
+```{r}
+calculateCurvesPar2 <- function(reach.curves.df, max.iter, ui, ci, ui.with.b, ci.with.b) {
+  a=1
+  
+  row.num <- ncol(reach.curves.df) - 1
+  
+  output.df <- data_frame(frequency = character(row.num),
+                          a = numeric(row.num), 
+                          b = numeric(row.num),
+                          c = numeric(row.num),
+                          d = numeric(row.num), 
+                          sse = numeric(row.num),
+                          maxGrp = numeric(row.num), 
+                          pointsNumber = numeric(row.num))
+  
+  
+  
+  sseF2 <- function(params, curves.df, a = 1) {
+    return(sum((params[3] * plnorm(a*curves.df$grp, params[1], params[2]) - curves.df$Reach)^2))
+  }
+  
+  
+  sseFixedBF <- function(params, curves.df, b, a = 1) {
+    return(sum((b * plnorm(a*curves.df$grp, params[1], params[2]) - curves.df$Reach)^2))
+  }
+  
+  
+  
+  for (current.reach in 1:row.num){
+    
+    current.reach.df <- reach.curves.df %>%
+      dplyr::select('grp', Reach = paste0('reach', current.reach)) %>%
+      dplyr::filter(Reach != 0)
+    
+    
+    output.df$frequency[current.reach] <- current.reach
+    output.df$pointsNumber[current.reach] <- nrow(current.reach.df)
+    output.df$maxGrp[current.reach] <- round(max(current.reach.df$grp))
+    
+    
+    if (sum(current.reach.df$Reach) == 0) {
+      if (current.reach > 1) {
+        output.df <- output.df[1:(current.reach - 1), ]
+      } else {
+        output.df <- data_frame(frequency = character(0), a = numeric(0), b = numeric(0), c = numeric(0), d = numeric(0), sse = numeric(0), maxGrp = numeric(0), pointsNumber = numeric(0))
+      }
+      
+      return(output.df)
+    }
+    
+    sse.temporary <- c(rep(NA, max.iter))
+    acceptable.sse.found <- FALSE
+    iter.count <- 0
+    
+    
+    
+    if (current.reach == 1) {
+      
+      par <- c(rep(NA, 3 * max.iter))
+      dim(par) <- c(max.iter, 3)
+      while (!acceptable.sse.found & iter.count < max.iter){
+        iter.count <- iter.count + 1
+        optimization <- constrOptim(theta =
+                                      c(runif(1, 1, 98.9),
+                                        runif(1, 1, 98.9),
+                                        runif(1, 1 ,98.9)),
+                                    sseF2, NULL, ui.with.b, ci.with.b,
+                                    curves.df = current.reach.df)
+        par[iter.count, ] <- optimization$par
+        sse.temporary[iter.count] <- sseF2(par[iter.count, ], curves.df = current.reach.df, a = a)
+        if ((sse.temporary[iter.count])^(0.5) / nrow(current.reach.df) < min(mean(current.reach.df$Reach) * 0.1, 1)) {
+          acceptable.sse.found <- TRUE
+          choice <- iter.count
+        } else if (iter.count == max.iter) {
+          choice <- which(sse.temporary == min(sse.temporary))[1]
+        }
+      }
+      output.df$c[current.reach] <- par[choice, 1]
+      output.df$d[current.reach] <- par[choice, 2]
+      output.df$b[current.reach] <- par[choice, 3]
+      output.df$a[current.reach] <- a
+      
+      output.df$sse[current.reach] <- sse.temporary[choice]
+      
+    } else {
+      par <- c(rep(NA, 2 * max.iter))
+      dim(par) <- c(max.iter, 2)
+      b <- output.df$b[1]
+      while (!acceptable.sse.found & iter.count < max.iter) 
+      {
+        iter.count <- iter.count + 1
+        
+        optimization <- constrOptim(theta = c(runif(1, 1, 98.9),
+                                              runif(1, 1, 98.9)),
+                                    sseFixedBF, NULL, ui, ci, curves.df = current.reach.df, b = b, a = a)
+        
+        par[iter.count, ] <- optimization$par
+        sse.temporary[iter.count] <- sseFixedBF(par[iter.count, ], curves.df = current.reach.df, b = b, a = a)
+        if ((sse.temporary[iter.count])^(0.5) / nrow(current.reach.df) < min(mean(current.reach.df$Reach) * 0.1, 1)) {
+          acceptable.sse.found <- TRUE
+          choice <- iter.count
+        } else if (iter.count == max.iter) {
+          choice <- which(sse.temporary == min(sse.temporary))[1]
+        }
+      }
+      output.df$c[current.reach] <- par[choice, 1]
+      output.df$d[current.reach] <- par[choice, 2]
+      
+      output.df$sse[current.reach] <- sse.temporary[choice]
+      
+      output.df$b[current.reach] <- b
+      output.df$a[current.reach] <- a
+      
+    }
+  }
+  return(output.df)
+}
+
+```
+
+Zapuszczamy obydwie funkcje...
+
+Nowa:
+  
+```{r, message = FALSE, warning = FALSE}
+# Nowa funkcja
+start.time = Sys.time()
+
+out.table = current.yt.data.df %>%
+  group_by(dict_id) %>%
+  group_modify(~EstCurve(.))  %>%
+  mutate(type = substring(type, 6))
+
+end.time = Sys.time()
+```
+
+```{r, message = FALSE}
+# Tabelki podsumowujace
+
+sse.table = out.table %>%
+  group_by(dict_id) %>%
+  summarize(sse_sum = sum(sse),
+            maxGrp = max(maxGrp))
+
+
+bad.table = out.table %>%
+  group_by(dict_id) %>%
+  summarize(sse_sum = sum(sse),
+            maxGrp = max(maxGrp)) %>%
+  mutate(relative = sse_sum / maxGrp) %>%
+  filter(relative > .5) %>%
+  mutate(across(where(is.numeric), round, 2 )) %>%
+  arrange(desc(relative))
+
+
+n_bad = sse.table %>%
+  mutate(relative = sse_sum / maxGrp) %>%
+  summarise(n_bad = sum(relative > .5),
+            n_not_converged = sum(relative > 10))
+
+
+end.time = Sys.time()
+
+elapsed = end.time - start.time
+```
+
+```{r, eval = FALSE}
+out.lists = current.yt.data.df %>%
+  filter(dict_id == 4178924) %>%
+  group_by(dict_id) %>%
+  group_modify(~EstCurve(.)) #%>%
+#replicate(n = 10, simplify = FALSE)
+#rename(type = frequency)
+out.lists %>% head(7)
+```
+
+Stara:
+  
+```{r, message=F, warning=F}
+
+# Stara funkcja
+
+start.time1 = Sys.time()
+
+
+out.table.old = current.yt.data.df %>%
+  group_by(dict_id) %>%
+  group_modify(~calculateCurvesPar2(., max.iter = 20, ui.with.b = ui.with.b, ci.with.b = ci.with.b, ui = ui, ci = ci)) 
+
+end.time1 = Sys.time()
+
+elapsed1 = end.time1 - start.time1 
+
+
+bad.table.old = out.table.old %>%
+  group_by(dict_id) %>%
+  summarize(sse_sum = sum(sse),
+            maxGrp = max(maxGrp)) %>%
+  mutate(relative = sse_sum / maxGrp) %>%
+  filter(relative > .5) %>%
+  mutate(across(where(is.numeric), round, 2 )) %>%
+  arrange(desc(relative))
+
+
+
+```
+
+Funkcja stara:
+  
+```{r}
+elapsed
+```
+
+Funkcja nowa:
+  
+```{r}
+elapsed1
+```
+
+## Validation
+
+```{r echo=FALSE, warning = F}
+inputPanel(
+  sliderInput("dict_id", label = "Id",
+              min = min(current.ids),
+              max = max(current.ids), 
+              step = 1, 
+              value = min(current.ids))
+)
+
+
+renderPlot({
+  
+  out.table %>%
+    add_column(a = 1, style = "new")  %>%
+    mutate(frequency = type) %>%
+    bind_rows(., out.table.old %>%
+                add_column(style = "old", data = out.table$data)) %>%
+    filter(dict_id == input$dict_id)%>%
+    unnest() %>%
+    mutate(y_hat = b * plnorm(grp, c, d)) %>%
+    ggplot() + 
+    geom_point(aes(x = grp, y = reach, col = frequency)) +
+    geom_line(aes(x = grp, y = y_hat, col = frequency)) +
+    facet_grid(~style) +
+    theme_bw()
+})
+
+
+renderText({paste0("For ", n, " IDs I needed: ", round(elapsed, 2), " minutes to do my calculations.")})
+
+renderText({paste0("For ", n, " IDs there are: ", n_bad[1], " poor fits includinng ", n_bad[2], " cases where algorithm couldn't converge to optimal solution")})
+
+```
+
+## Table with poor fits - both function (x - new, y - old)
+
+```{r, echo = FALSE}
+renderDT({
+  datatable(bad.table %>%
+              full_join(bad.table.old, by = c("dict_id" = "dict_id")) %>%
+              select(dict_id, sse_sum.x, sse_sum.y, relative.x, relative.y, maxGrp.x))
+})
+
+
+```
+
+```{r eval = F}
+
+renderPlot({
+  
+  out.table %>%
+    filter(dict_id == 4178924)%>%
+    unnest() %>%
+    mutate(y_hat = b * plnorm(grp, c, d)) %>%
+    ggplot() + 
+    geom_point(aes(x = grp, y = reach, col = type)) +
+    geom_line(aes(x = grp, y = y_hat, col = type)) +
+    theme_bw() +
+    labs(title = paste0("Sum of squared error for id: ",
+                        sse.table %>%
+                          filter(dict_id == 4178924) %>%
+                          select(dict_id),
+                        " amounts to ",
+                        sse.table %>%
+                          filter(dict_id == 4178924) %>%
+                          select(sse_sum) %>%
+                          round(2), "\n Relative to max GRP: ",
+                        sse.table %>%
+                          filter(dict_id == 4178924) %>%
+                          mutate(relative = sse_sum / maxGrp) %>%
+                          select(relative) %>%
+                          round(2)))
+  
+})
+
+
+
+out.table%>%
+  filter(dict_id == 4178924)%>%
+  unnest() %>%
+  mutate(y_hat = b * plnorm(grp, c, d)) %>%
+  ggplot() + 
+  geom_point(aes(x = grp, y = reach, col = type)) +
+  geom_line(aes(x = grp, y = y_hat, col = type)) +
+  theme_bw() +
+  labs(title = paste0("Sum of squared error for id: ",
+                      sse.table %>%
+                        filter(dict_id == 4178924) %>%
+                        select(dict_id),
+                      " amounts to ",
+                      sse.table %>%
+                        filter(dict_id == 4178924) %>%
+                        select(sse_sum) %>%
+                        round(2), "\n Relative to max GRP: ",
+                      sse.table %>%
+                        filter(dict_id == 4178924) %>%
+                        mutate(relative = sse_sum / maxGrp) %>%
+                        select(relative) %>%
+                        round(2)))
+
+```
+
+# Python
+
+```{r}
+toy_data_py = current.yt.data.df %>%
+  filter(dict_id == 4178924) %>%
+  select(-dict_id)
+```
+
+```{python, fig.align = 'center' }
+from math import exp
+from scipy import stats
+import matplotlib.pyplot as plt
+
+import matplotlib
+matplotlib.use('TKAgg')
+
+def lognorm_cdf(x, mu, sigma, beta):
+    shape  = sigma
+    loc    = 0
+    scale  = exp(mu)
+    return beta * stats.lognorm.cdf(x, shape, loc, scale)
+  
+x = r.toy_data_py.iloc[:, 10]
+z = r.toy_data_py.iloc[:, 0]
+y = lognorm_cdf(x, 6.03, 2.45, 100)
+
+plt.scatter(x, y, label = "Fitted")
+plt.scatter(x ,z, label = "Actual")
+plt.legend(loc='best')
+
+plt.show()
+```
+
+```{python, fig.align = 'center'}
+from math import exp
+from scipy import stats
+#from scipy.optimize import minimize
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.optimize import curve_fit
+
+import matplotlib
+matplotlib.use('TKAgg')
+
+def model(x, mu, sigma, beta):
+    shape = sigma
+    loc = 0
+    scale = exp(mu)
+    return beta * stats.lognorm.cdf(x, shape, loc, scale)
+
+init_guess = [1, 1, 50]
+
+fit = curve_fit(model, r.toy_data_py['grp'], r.toy_data_py['reach1'], p0 = init_guess)
+
+ans, cov = fit
+fit_mu, fit_sigma, fit_beta = ans
+
+print(ans)
+
+x = r.toy_data_py.iloc[:, 10]
+z = r.toy_data_py.iloc[:, 0]
+y = lognorm_cdf(x, fit_mu, fit_sigma, fit_beta)
+plt.scatter(x, y, label = "Fitted", alpha = 0.5)
+plt.scatter(x ,z, label = "Actual", alpha = 0.5)
+plt.legend(loc='best')
+
+print(sum((y - z)**2))
+
+plt.show()
+```
