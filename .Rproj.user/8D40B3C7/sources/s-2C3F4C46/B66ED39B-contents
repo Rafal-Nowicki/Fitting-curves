@@ -1,7 +1,7 @@
 ---
-title: "Curves codes"
-author: "RN"
-date: "28 09 2020"
+title: "Estymacja krzywych YouTube"
+author: "Rafal Nowicki"
+date: "01 10 2020"
 output:
   html_document:
     theme: united
@@ -9,8 +9,18 @@ output:
     code_folding: hide
     toc: true
     toc_float: true
+    number_sections: true
 runtime: shiny
 ---
+
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"logo.png\" style=\"float: right;width: 250px;\"/>')
+   });
+</script>
+
+
   
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -41,7 +51,7 @@ W ten sposob zagwarantowane jest ze krzywe wyzszych czestotliwosci nie beda prze
 
 W tej sekcji porownane zostana dwie funkcje optymalizacyjne napisane w R pod katem bledow oraz czasu wykonywania.
 
-### Biblioteki
+## Biblioteki
 
 Ladujemy potrzebne biblioteki - w zasadzie potrzebujemy tylko `RODBC` oraz `tidyverse`.
 
@@ -81,12 +91,11 @@ raw.current.yt.data.df <- sqlQuery(myconn,
 
 Pierwszych 50 wierszy wyglada tak:
   
-```{r, eval = F}
+```{r, eval = TRUE}
 raw.current.yt.data.df %>%
-  head(50) %>%
-  kable() %>%
-  kable_styling() %>%
-  scroll_box(width = "100%", height = "400px")
+  head(150) %>%
+  datatable(., rownames = FALSE, filter="top",
+            options = list(pageLength = 5, scrollX=T))
 ```
 
 ## Pozyskanie danych
@@ -358,10 +367,10 @@ calculateCurvesPar2 <- function(reach.curves.df, max.iter, ui, ci, ui.with.b, ci
 
 Zapuszczamy obydwie funkcje...
 
-Nowa:
   
 ```{r, message = FALSE, warning = FALSE}
-# Nowa funkcja
+
+# Nowa funkcja -----------------------------------------------------------------
 start.time = Sys.time()
 
 out.table = current.yt.data.df %>%
@@ -370,16 +379,9 @@ out.table = current.yt.data.df %>%
   mutate(type = substring(type, 6))
 
 end.time = Sys.time()
-```
+elapsed = end.time - start.time
 
-```{r, message = FALSE}
 # Tabelki podsumowujace
-
-sse.table = out.table %>%
-  group_by(dict_id) %>%
-  summarize(sse_sum = sum(sse),
-            maxGrp = max(maxGrp))
-
 
 bad.table = out.table %>%
   group_by(dict_id) %>%
@@ -390,36 +392,19 @@ bad.table = out.table %>%
   mutate(across(where(is.numeric), round, 2 )) %>%
   arrange(desc(relative))
 
+sse.table = out.table %>%
+  group_by(dict_id) %>%
+  summarize(sse_sum = sum(sse),
+            maxGrp = max(maxGrp))
 
 n_bad = sse.table %>%
   mutate(relative = sse_sum / maxGrp) %>%
   summarise(n_bad = sum(relative > .5),
             n_not_converged = sum(relative > 10))
 
-
-end.time = Sys.time()
-
-elapsed = end.time - start.time
-```
-
-```{r, eval = FALSE}
-out.lists = current.yt.data.df %>%
-  filter(dict_id == 4178924) %>%
-  group_by(dict_id) %>%
-  group_modify(~EstCurve(.)) #%>%
-#replicate(n = 10, simplify = FALSE)
-#rename(type = frequency)
-out.lists %>% head(7)
-```
-
-Stara:
-  
-```{r, message=F, warning=F}
-
-# Stara funkcja
+# Stara funkcja ----------------------------------------------------------------
 
 start.time1 = Sys.time()
-
 
 out.table.old = current.yt.data.df %>%
   group_by(dict_id) %>%
@@ -429,6 +414,7 @@ end.time1 = Sys.time()
 
 elapsed1 = end.time1 - start.time1 
 
+# Tabelka podsumowujaca
 
 bad.table.old = out.table.old %>%
   group_by(dict_id) %>%
@@ -440,6 +426,15 @@ bad.table.old = out.table.old %>%
   arrange(desc(relative))
 
 
+sse.table.old = out.table.old %>%
+  group_by(dict_id) %>%
+  summarize(sse_sum = sum(sse),
+            maxGrp = max(maxGrp))
+
+n_bad.old = sse.table.old %>%
+  mutate(relative = sse_sum / maxGrp) %>%
+  summarise(n_bad = sum(relative > .5),
+            n_not_converged = sum(relative > 10))
 
 ```
 
