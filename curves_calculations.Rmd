@@ -16,7 +16,7 @@ runtime: shiny
 ```{r, echo=FALSE}
 htmltools::img(src = knitr::image_uri("logo.png"), 
                alt = 'logo', 
-               style = 'position:absolute; top:1; right:0; padding:30px;width: 150px;')
+               style = 'position:absolute; top:30px; right:0; padding:30px;width: 150px;')
 ```
 
 ```{r setup, include=FALSE}
@@ -78,14 +78,14 @@ For each `dict_id`:
 -   We optimize `SSE` once again - this time for all reaches of higher frequency, so `reach 2+` possibly up to `reach 10+`. In that way we end up with a table looking somewhat like that:
 
 | frequency | $\beta$ | $\mu$ | $\sigma$ | $\Sigma_i^n e_i$ |
-|-----------|---------|-------|----------|--------------|
-| 1         | 75      | 2.45  | 3.15     | 0.08         |
-| 2         | 75      | 3.12  | 3.22     | 0.12         |
-| 3         | 75      | 4.13  | 2.73     | 0.06         |
-| 4         | 75      | 3.65  | 3.23     | 0.22         |
-| 5         | 75      | 2.22  | 1.27     | 0.45         |
-| 6         | 75      | 5.57  | 3.62     | 0.32         |
-| 7         | 75      | 4.64  | 2.55     | 0.33         |
+|-----------|---------|-------|----------|------------------|
+| 1         | 75      | 2.45  | 3.15     | 0.08             |
+| 2         | 75      | 3.12  | 3.22     | 0.12             |
+| 3         | 75      | 4.13  | 2.73     | 0.06             |
+| 4         | 75      | 3.65  | 3.23     | 0.22             |
+| 5         | 75      | 2.22  | 1.27     | 0.45             |
+| 6         | 75      | 5.57  | 3.62     | 0.32             |
+| 7         | 75      | 4.64  | 2.55     | 0.33             |
 
 : Desired output
 
@@ -97,10 +97,11 @@ In this section we will compare two R functions designed to do all the tasks des
 
 Compared will be:
 
-- times needed to do all the calculations
-- sum of squared errors (both within `dict_id` and in total)
+-   times needed to do all the calculations
+-   sum of squared errors (both within `dict_id` and in total)
 
 ## Libraries
+
 Let's take off with the analysis! First we have to load necessary packages. In fact we need just two of them - `RODBC` for DB connection and `tidyverse` for data wrangling. Remaing two libraries `DT` and `kableExtra` are used just for this document to look nice.
 
 ```{r message = FALSE}
@@ -128,7 +129,9 @@ all.ids.df <- sqlQuery(myconn,
                        stringsAsFactors = F) %>%
   arrange(dict_id)
 
-current.ids= all.ids.df[1:10, ]
+current.ids= all.ids.df[1:50, ]
+
+n = length(current.ids)
 
 # Get the data for given IDs
 raw.current.yt.data.df <- sqlQuery(myconn, 
@@ -138,6 +141,7 @@ raw.current.yt.data.df <- sqlQuery(myconn,
 ```
 
 Now we can finally take a look on the data itself. First 150 rows look as follows:
+
 ```{r, eval = TRUE}
 raw.current.yt.data.df %>%
   head(150) %>%
@@ -147,15 +151,13 @@ raw.current.yt.data.df %>%
 
 ## Data wrangling
 
-In order to proceed with the analysis we first have to create variables of interest - `GRP` and all the `Reaches`. 
+In order to proceed with the analysis we first have to create variables of interest - `GRP` and all the `Reaches`.
 
 Creating `GRP` variable is quite simple - it's just division of two columns:
 
-$$grp = 100 \times \frac{impression\_target}  {audience\_size}$$
-With `reaches` it's similar but as there are several of them we will go with:
-`... %>% mutate(across(starts_with("reach"), ~{100 * ./audience_size})) %>% ...`
+$$grp = 100 \times \frac{impression\_target}  {audience\_size}$$ With `reaches` it's similar but as there are several of them we will go with: `... %>% mutate(across(starts_with("reach"), ~{100 * ./audience_size})) %>% ...`
 
- $$reach\_transformed_i = \frac{reach_i}{audience\_size} \;\textbf{ for i = 1, 2, ...}$$
+$$reach\_transformed_i = \frac{reach_i}{audience\_size} \;\textbf{ for i = 1, 2, ...}$$
 
 ```{r}
 # Transform the data ----------------------------------------------------------
@@ -170,12 +172,11 @@ current.yt.data.df = raw.current.yt.data.df %>%
 
 Now we will set up all the necessary constraints for the optimization algorithm - on $\beta$, $\mu$ and $\sigma$.
 
+------------------------------------------------------------------------
 
-***
-**One important note:**
-Not applying any constraints on $\beta$ might result in better fit but then we loose convenient interpretability (as the asymptotic reach (?)).
+**One important note:** Not applying any constraints on $\beta$ might result in better fit but then we loose convenient interpretability (as the asymptotic reach (?)).
 
-***
+------------------------------------------------------------------------
 
 ```{r}
 # Z ML estimator
@@ -201,7 +202,7 @@ ui.with.b <- rbind(ui.with.b, matrix(c(0,0,1, 0,0,-1), ncol = 3, byrow = TRUE))
 ci.with.b <- round(c(1, -500, c_min, -c_max, d_min, -d_max))
 ```
 
-## R new function 
+## R new function
 
 This function doesn't use any loop (directly) and is based on constrOptim function. It calculates curves just once so in the output there might (or might not?) be some poor fits - we will check it...
 
@@ -461,6 +462,9 @@ n_bad = sse.table %>%
   summarise(n_bad = sum(relative > .5),
             n_not_converged = sum(relative > 10))
 
+sse.sum = sse.table %>%
+  summarise(sse.sum = sum(sse_sum))
+
 # Stara funkcja ----------------------------------------------------------------
 
 start.time1 = Sys.time()
@@ -495,27 +499,44 @@ n_bad.old = sse.table.old %>%
   summarise(n_bad = sum(relative > .5),
             n_not_converged = sum(relative > 10))
 
-```
-
-Porownanie czasu wykonywania obliczen dla obydwu funkcji.
-
-```{r}
-data.frame(stara = elapsed, nowa = elapsed1) %>%
-  kable() %>%
-  kable_styling()
+sse.sum.old = sse.table.old %>%
+  summarise(sse.sum = sum(sse_sum))
 
 ```
 
 ## Comparison
 
-```{r echo=FALSE, warning = F}
+Let's compare time needed for both functions to do all of the necessary calculations and associated Total Sums of Squared Errors.
+
+### Summary Table
+
+```{r}
+summary_tab = elapsed %>%
+  rbind(sse.sum) %>%
+  cbind(elapsed1 %>%
+          rbind(sse.sum.old)) %>%
+  set_names(., c("new", "old")) %>%
+  add_column(variable = c("time", "total SSE"), .before = T)
+
+summary_tab %>%
+  mutate_at(c(2,3), round, 2) %>%
+  kable() %>%
+  kable_styling() %>%
+  column_spec(2, background  = ifelse(summary_tab$new > summary_tab$old ,"red", "green"), color = "white") %>%
+  column_spec(3, background = ifelse(summary_tab$old > summary_tab$new ,"red", "green"), color = "white")
+
+```
+
+### Vizualization
+
+```{r echo=FALSE, warning=FALSE}
 inputPanel(
   sliderInput("dict_id", label = "Id",
               min = min(current.ids),
               max = max(current.ids), 
               step = 1, 
               value = min(current.ids))
-)
+  )
 
 
 renderPlot({
@@ -535,23 +556,41 @@ renderPlot({
     theme_bw()
 })
 
-
-renderText({paste0("For ", n, " IDs I needed: ", round(elapsed, 2), " minutes to do my calculations.")})
-
-renderText({paste0("For ", n, " IDs there are: ", n_bad[1], " poor fits includinng ", n_bad[2], " cases where algorithm couldn't converge to optimal solution")})
-
 ```
 
-## Table with poor fits - both function (x - new, y - old)
+
+***
+```{r echo=FALSE, warning=FALSE}
+renderText({paste0("")})
+
+
+renderText({paste0("")})
+
+
+output$message1 <- renderText({paste0("Old function: For ", n, " IDs there are: ", n_bad.old[1], " poor fits includinng ", n_bad.old[2], " cases where algorithm couldn't converge to optimal solution")})
+
+output$message <- renderText({paste0("New function: For ", n, " IDs there are: ", n_bad[1], " poor fits includinng ", n_bad[2], " cases where algorithm couldn't converge to optimal solution")})
+
+span(textOutput("message1"), style="color:grey;font-size:20px")
+
+
+span(textOutput("message"), style="color:black;font-size:20px")
+```
+
+
+
+***
+
+### Table with poor fits - both function
 
 ```{r, echo = FALSE}
 renderDT({
   datatable(bad.table %>%
               full_join(bad.table.old, by = c("dict_id" = "dict_id")) %>%
-              select(dict_id, sse_sum.x, sse_sum.y, relative.x, relative.y, maxGrp.x))
+              select(dict_id, sse_sum.x, sse_sum.y, relative.x, relative.y, maxGrp.x) %>%
+              rename(sse_new = sse_sum.x, sse_old = sse_sum.y,
+                     relative_new = relative.x, relative_old = relative.y))
 })
-
-
 ```
 
 ```{r eval = F}
@@ -612,13 +651,18 @@ out.table%>%
 
 # Python
 
+In this section we will recreate functionality of R modules described above in Python.
+
+
+
 ```{r}
 toy_data_py = current.yt.data.df %>%
-  filter(dict_id == 4178924) %>%
+  filter(dict_id == 4178925) %>%
   select(-dict_id)
 ```
 
-```{python, fig.align = 'center' }
+
+```{python, fig.align = 'center'}
 from math import exp
 from scipy import stats
 import matplotlib.pyplot as plt
@@ -638,12 +682,14 @@ y = lognorm_cdf(x, 6.03, 2.45, 100)
 
 plt.scatter(x, y, label = "Fitted")
 plt.scatter(x ,z, label = "Actual")
-plt.legend(loc='best')
+plt.legend(loc = 'best')
 
 plt.show()
 ```
 
-```{python, fig.align = 'center'}
+
+
+```{python, fig.align = 'center', eval = FALSE}
 from math import exp
 from scipy import stats
 #from scipy.optimize import minimize

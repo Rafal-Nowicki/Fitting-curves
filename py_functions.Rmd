@@ -1,0 +1,66 @@
+---
+title: "Untitled"
+author: "Rafal Nowicki"
+date: "1 10 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(reticulate)
+knitr::knit_engines$set(python = reticulate::eng_python)  
+
+```
+
+
+```{python}
+import pandas as pd 
+data = pd.read_csv("toy_data.csv") 
+data.head()
+
+
+data['grp'] = data['impressions_target']/data['audience_size']
+data.head()
+
+print(data[data.columns[pd.Series(data.columns).str.startswith('reach')]]/data['audience_size'])
+
+
+df = data[data.columns[pd.Series(data.columns).str.startswith('reach')]].apply(lambda x: x/data['audience_size'], 0)
+
+print(df)
+```
+
+
+```{python}
+# import libraries and load data -----------------------------------------------
+import pandas as pd 
+data = pd.read_csv("toy_data.csv") # docelowo z DB
+
+print(data
+)
+data['grp'] = data['impressions_target']/data['audience_size']
+
+
+df = data[data.columns[pd.Series(data.columns).str.startswith('reach')]].apply(lambda x: x/data['audience_size'], 0)
+
+
+df_c = pd.concat([df.reset_index(drop=True), data[['grp', 'dict_id']]], axis=1)
+
+print(df_c)
+
+
+pd.groupby(df_c, dict_id)
+
+#pd.melt(df_c, id_vars = "grp")
+
+df_d = pd.melt(df_c, id_vars = ['dict_id', 'grp'])
+
+
+df_e = df_d[df_d.value != 0]
+
+print(df_e)
+
+print(df_e.groupby(by = 'variable'))
+
+```
+
