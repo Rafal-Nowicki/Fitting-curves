@@ -4,16 +4,19 @@ author: "Rafal Nowicki"
 date: "01 10 2020"
 output:
   html_document:
+    css: style.css
     theme: united
     highlight: tango
     code_folding: hide
     toc: true
     toc_float: true
     number_sections: true
+    includes:
+      before_body: header.html
 runtime: shiny
 ---
 
-```{r, echo=FALSE}
+```{r, echo=FALSE, eval = FALSE}
 htmltools::img(src = knitr::image_uri("logo.png"), 
                alt = 'logo', 
                style = 'position:absolute; top:30px; right:0; padding:30px;width: 150px;')
@@ -129,7 +132,7 @@ all.ids.df <- sqlQuery(myconn,
                        stringsAsFactors = F) %>%
   arrange(dict_id)
 
-current.ids= all.ids.df[1:50, ]
+current.ids= all.ids.df[1:10, ]
 
 n = length(current.ids)
 
@@ -522,8 +525,8 @@ summary_tab %>%
   mutate_at(c(2,3), round, 2) %>%
   kable() %>%
   kable_styling() %>%
-  column_spec(2, background  = ifelse(summary_tab$new > summary_tab$old ,"red", "green"), color = "white") %>%
-  column_spec(3, background = ifelse(summary_tab$old > summary_tab$new ,"red", "green"), color = "white")
+  column_spec(2, background  = ifelse(summary_tab$new > summary_tab$old ,"#DD4814", "darkgreen"), color = "white", bold = TRUE) %>%
+  column_spec(3, background = ifelse(summary_tab$old > summary_tab$new ,"#DD4814", "darkgreen"), color = "white", bold = TRUE)
 
 ```
 
@@ -648,6 +651,124 @@ out.table%>%
                         round(2)))
 
 ```
+
+
+## Simulated Annealing
+Let's try something totally different - simulated annealing algorithm!
+
+```{r, eval = FALSE}
+simAnn = function(x, f, t, del, alpha.cal, maxIt)
+{
+  
+  x = c(runif(1, 0, 10),
+        runif(1, 0, 10),
+        runif(1, 0, 10))
+  
+  del = 0.1
+  t = 100
+  maxIt = 10000
+  alpha = 0.995
+  
+  K = maxIt
+  t.K = 10^-3
+  alpha.cal = (t.K/t)^(1/K)
+  
+  n = length(x)
+  out = list()
+  out$hist = matrix(NA, maxIt+1, n)
+  out$hist[1,] = x
+  
+  out$t.hist <- c(t)
+  outf.hist <- c(f(x, curves.df))
+  
+  
+  for (i in 1 : maxIt)
+  {
+    # Candidate solution
+    x_c = x + runif(n, -del, del)
+    
+    # Activation function
+    A = min(1, exp( -(f(x_c, curves.df) - f(x, curves.df)) / t ))
+    if (runif(1) < A)
+    {
+      x = x_c
+    }
+    # Temperature update
+    t = alpha.cal * t
+    
+    out$hist[i+1, ] = x
+    out$t.hist[i+1] = t
+    out$f.hist[i+1] = f(x, curves.df)
+  }
+  out$x = x
+  out$t = t
+  
+  return(out)
+}
+
+
+sse = function(x, data){
+
+    return(sum((x[1] * plnorm(data$grp, x[2], x[3]) - data$reach)^2))
+  
+}
+
+
+
+curves.df = current.yt.data.df %>%
+  filter(dict_id == 4178924) %>%
+  select(-dict_id) %>%
+  na_if(., 0) %>%
+  arrange(grp) %>%
+  gather("type", "reach", -grp) %>%
+  drop_na() %>%
+  group_by(type) %>%
+  nest() %>%
+  mutate(results = map(.x = data, .f = ~simAnn(f = sse,
+                                               data = .x)))
+
+curves.df[1,2][[1]]
+
+  mutate(results = map(.x = data, .f = simAnn))
+
+results = simAnn(x, f, t, del, alpha.cal, maxIt)
+
+results$x
+results$f.hist[length(results$f.hist)]
+
+  
+
+curves.df %>%
+    select(grp, reach1) %>%
+    na_if(., 0) %>%
+    arrange(grp) %>%
+    gather("type","reach", -grp) %>%
+    drop_na() %>%
+    nest() 
+
+
+
+mutate(optimized = map(.x = data,
+                           .f = ~constrOptim(theta = c(b.init, c.init, d.init),
+                                             f = sse,
+                                             curves.df = .x,
+                                             grad = NULL,
+                                             ui = ui.with.b,
+                                             ci = ci.with.b))) %>%
+    mutate(params = map(.x = optimized, .f = ~.x$par),
+           sse = map_dbl(.x = optimized, .f = ~.x$value),
+           maxGrp = map_dbl(.x = data, .f = ~max(.x$grp)),
+           pointsNumber = map_dbl(.x = data, .f = ~nrow(.x))) %>%
+    unnest_wider(params) %>%
+    rename(b = ...1, c = ...2, d = ...3) %>%
+    bind_cols(type = "reach1" ,.)
+
+
+
+```
+
+
+
 
 # Python
 
